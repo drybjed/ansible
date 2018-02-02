@@ -39,6 +39,7 @@ Ansible Changes By Release
 * nxos_portchannel module is deprecated in Ansible 2.5. Use nxos_linkagg module instead.
 * nxos_switchport module is deprecated in Ansible 2.5. Use nxos_l2_interface module instead.
 * ec2_ami_find has been deprecated, use ec2_ami_facts.
+* ldap_attr has been deprecated, use ldap_attrs.
 
 See [Porting Guide](http://docs.ansible.com/ansible/devel/porting_guides.html) for more information
 
@@ -209,6 +210,7 @@ See [Porting Guide](http://docs.ansible.com/ansible/devel/porting_guides.html) f
 
 #### Net Tools
   * ip_netns
+  - ldap_attrs
 
 #### Network
 - aci

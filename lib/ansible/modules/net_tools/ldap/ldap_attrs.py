@@ -3,6 +3,7 @@
 
 # (c) 2016, Peter Sagerson <psagers@ignorare.net>
 # (c) 2016, Jiri Tyr <jiri.tyr@gmail.com>
+# (c) 2017, Alexander Korinek <noles@a3k.net>
 #
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
@@ -11,16 +12,16 @@ __metaclass__ = type
 
 
 ANSIBLE_METADATA = {'metadata_version': '1.1',
-                    'status': ['deprecated'],
+                    'status': ['preview'],
                     'supported_by': 'community'}
 
 
 DOCUMENTATION = """
 ---
-module: ldap_attr
-short_description: Add or remove LDAP attribute values.
+module: ldap_attrs
+short_description: Add or remove multiple LDAP attribute values.
 description:
-  - Add or remove LDAP attribute values.
+  - Add or remove multiple LDAP attribute values.
 notes:
   - This only deals with attributes on existing entries. To add or remove
     whole entries, see M(ldap_entry).
@@ -36,10 +37,10 @@ notes:
     rules. This should work out in most cases, but it is theoretically
     possible to see spurious changes when target and actual values are
     semantically identical but lexically distinct.
-version_added: '2.3'
-deprecated: Deprecated in 2.5. Use M(ldap_attrs) instead.
+version_added: '2.5'
 author:
   - Jiri Tyr (@jtyr)
+  - Alexander Korinek (@noles)
 requirements:
   - python-ldap
 options:
@@ -59,10 +60,6 @@ options:
     required: true
     description:
       - The DN of the entry to modify.
-  name:
-    required: true
-    description:
-      - The name of the attribute to modify.
   server_uri:
     required: false
     default: ldapi:///
@@ -87,11 +84,10 @@ options:
         will be forced to exactly those provided and no others. If
         I(state=exact) and I(value) is empty, all values for this
         attribute will be removed.
-  values:
+  attributes:
     required: true
     description:
-      - The value(s) to add or remove. This can be a string or a list of
-        strings. The complex argument format is required in order to pass
+      - The attribute(s) and value(s) to add or remove. The complex argument format is required in order to pass
         a list of strings (see examples).
   validate_certs:
     required: false
@@ -100,60 +96,56 @@ options:
     description:
       - If C(no), SSL certificates will not be validated. This should only be
         used on sites using self-signed certificates.
-    version_added: "2.4"
 """
 
 
 EXAMPLES = """
 - name: Configure directory number 1 for example.com
-  ldap_attr:
+  ldap_attrs:
     dn: olcDatabase={1}hdb,cn=config
-    name: olcSuffix
-    values: dc=example,dc=com
+    attributes:
+        olcSuffix: dc=example,dc=com
     state: exact
 
 # The complex argument format is required here to pass a list of ACL strings.
 - name: Set up the ACL
-  ldap_attr:
+  ldap_attrs:
     dn: olcDatabase={1}hdb,cn=config
-    name: olcAccess
-    values:
-      - >-
-        {0}to attrs=userPassword,shadowLastChange
-        by self write
-        by anonymous auth
-        by dn="cn=admin,dc=example,dc=com" write
-        by * none'
-      - >-
-        {1}to dn.base="dc=example,dc=com"
-        by dn="cn=admin,dc=example,dc=com" write
-        by * read
+    attributes:
+        olcAccess:
+          - >-
+            {0}to attrs=userPassword,shadowLastChange
+            by self write
+            by anonymous auth
+            by dn="cn=admin,dc=example,dc=com" write
+            by * none'
+          - >-
+            {1}to dn.base="dc=example,dc=com"
+            by dn="cn=admin,dc=example,dc=com" write
+            by * read
     state: exact
 
 - name: Declare some indexes
-  ldap_attr:
+  ldap_attrs:
     dn: olcDatabase={1}hdb,cn=config
-    name: olcDbIndex
-    values: "{{ item }}"
-  with_items:
-    - objectClass eq
-    - uid eq
+    attributes:
+        olcDbIndex:
+            - objectClass eq
+            - uid eq
 
 - name: Set up a root user, which we can use later to bootstrap the directory
-  ldap_attr:
+  ldap_attrs:
     dn: olcDatabase={1}hdb,cn=config
-    name: "{{ item.key }}"
-    values: "{{ item.value }}"
+    attributes:
+        olcRootDN: cn=root,dc=example,dc=com
+        olcRootPW: "{SSHA}tabyipcHzhwESzRaGA7oQ/SDoBZQOGND"
     state: exact
-  with_dict:
-    olcRootDN: cn=root,dc=example,dc=com
-    olcRootPW: "{SSHA}tabyipcHzhwESzRaGA7oQ/SDoBZQOGND"
 
 - name: Get rid of an unneeded attribute
-  ldap_attr:
+  ldap_attrs:
     dn: uid=jdoe,ou=people,dc=example,dc=com
-    name: shadowExpire
-    values: ""
+    attributes:
+        shadowExpire: ""
     state: exact
     server_uri: ldap://localhost/
     bind_dn: cn=admin,dc=example,dc=com
@@ -168,10 +160,10 @@ EXAMPLES = """
 #   bind_dn: cn=admin,dc=example,dc=com
 #   bind_pw: password
 - name: Get rid of an unneeded attribute
-  ldap_attr:
+  ldap_attrs:
     dn: uid=jdoe,ou=people,dc=example,dc=com
-    name: shadowExpire
-    values: ""
+    attributes:
+        shadowExpire: ""
     state: exact
     params: "{{ ldap_auth }}"
 """
@@ -206,76 +198,83 @@ class LdapAttr(object):
         self.bind_dn = self.module.params['bind_dn']
         self.bind_pw = self.module.params['bind_pw']
         self.dn = self.module.params['dn']
-        self.name = self.module.params['name']
         self.server_uri = self.module.params['server_uri']
         self.start_tls = self.module.params['start_tls']
         self.state = self.module.params['state']
         self.verify_cert = self.module.params['validate_certs']
-
-        # Normalize values
-        if isinstance(self.module.params['values'], list):
-            self.values = map(str, self.module.params['values'])
-        else:
-            self.values = [str(self.module.params['values'])]
+        self.attrs = self.module.params['attributes']
 
         # Establish connection
         self.connection = self._connect_to_ldap()
 
-    def add(self):
-        values_to_add = filter(self._is_value_absent, self.values)
+    def _normalize_values(self, values):
+        """ Normalize attribute's values. """
+        norm_values = []
 
-        if len(values_to_add) > 0:
-            modlist = [(ldap.MOD_ADD, self.name, values_to_add)]
-        else:
-            modlist = []
+        if isinstance(values, list):
+            norm_values = map(str, values)
+        elif values != "":
+            norm_values = [str(values)]
+
+        return norm_values
+
+    def add(self):
+        modlist = []
+        for name, values in self.module.params['attributes'].items():
+            norm_values = self._normalize_values(values)
+            for value in norm_values:
+                if self._is_value_absent(name, value):
+                    modlist.append((ldap.MOD_ADD, name, value))
 
         return modlist
 
     def delete(self):
-        values_to_delete = filter(self._is_value_present, self.values)
-
-        if len(values_to_delete) > 0:
-            modlist = [(ldap.MOD_DELETE, self.name, values_to_delete)]
-        else:
-            modlist = []
+        modlist = []
+        for name, values in self.module.params['attributes'].items():
+            norm_values = self._normalize_values(values)
+            for value in norm_values:
+                if self._is_value_present(name, value):
+                    modlist.append((ldap.MOD_DELETE, name, value))
 
         return modlist
 
     def exact(self):
-        try:
-            results = self.connection.search_s(
-                self.dn, ldap.SCOPE_BASE, attrlist=[self.name])
-        except ldap.LDAPError as e:
-            self.module.fail_json(
-                msg="Cannot search for attribute %s" % self.name,
-                details=to_native(e))
-
-        current = results[0][1].get(self.name, [])
         modlist = []
+        for name, values in self.module.params['attributes'].items():
+            norm_values = self._normalize_values(values)
+            try:
+                results = self.connection.search_s(
+                    self.dn, ldap.SCOPE_BASE, attrlist=[name])
+            except ldap.LDAPError as e:
+                self.module.fail_json(
+                    msg="Cannot search for attribute %s" % name,
+                    details=to_native(e))
 
-        if frozenset(self.values) != frozenset(current):
-            if len(current) == 0:
-                modlist = [(ldap.MOD_ADD, self.name, self.values)]
-            elif len(self.values) == 0:
-                modlist = [(ldap.MOD_DELETE, self.name, None)]
-            else:
-                modlist = [(ldap.MOD_REPLACE, self.name, self.values)]
+            current = results[0][1].get(name, [])
+
+            if frozenset(norm_values) != frozenset(current):
+                if len(current) == 0:
+                    modlist.append((ldap.MOD_ADD, name, norm_values))
+                elif len(norm_values) == 0:
+                    modlist.append((ldap.MOD_DELETE, name, None))
+                else:
+                    modlist.append((ldap.MOD_REPLACE, name, norm_values))
 
         return modlist
 
-    def _is_value_present(self, value):
+    def _is_value_present(self, name, value):
         """ True if the target attribute has the given value. """
         try:
             is_present = bool(
-                self.connection.compare_s(self.dn, self.name, value))
+                self.connection.compare_s(self.dn, name, value))
         except ldap.NO_SUCH_ATTRIBUTE:
             is_present = False
 
         return is_present
 
-    def _is_value_absent(self, value):
+    def _is_value_absent(self, name, value):
         """ True if the target attribute doesn't have the given value. """
-        return not self._is_value_present(value)
+        return not self._is_value_present(name, value)
 
     def _connect_to_ldap(self):
         if not self.verify_cert:
@@ -307,14 +306,13 @@ def main():
             'bind_dn': dict(default=None),
             'bind_pw': dict(default='', no_log=True),
             'dn': dict(required=True),
-            'name': dict(required=True),
             'params': dict(type='dict'),
             'server_uri': dict(default='ldapi:///'),
             'start_tls': dict(default=False, type='bool'),
             'state': dict(
                 default='present',
                 choices=['present', 'absent', 'exact']),
-            'values': dict(required=True, type='raw'),
+            'attributes': dict(required=True, type='dict'),
             'validate_certs': dict(default=True, type='bool'),
         },
         supports_check_mode=True,
